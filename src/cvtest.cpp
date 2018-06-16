@@ -16,14 +16,15 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <iostream>
+#include <random>
 
 using namespace std;
 using namespace Eigen;
 using namespace cv;
 using namespace quat;
 
-#define PATCH_SIZE 25
-#define PYRAMID_LEVELS 3
+#define PATCH_SIZE 6
+#define PYRAMID_LEVELS 2
 
 typedef Matrix<double, 6, 1> uVector;
 typedef Matrix<double, 7, 1> eVector;
@@ -40,8 +41,7 @@ Mat img_[PYRAMID_LEVELS];
 Vector2d cam_center_;
 Matrix<double, 2, 3> cam_F_;
 
-
-void proj(Quat& qz, Vector2d& eta, Matrix2d& jac)
+void proj(Quat qz, Vector2d& eta, Matrix2d& jac)
 {
   Vector3d zeta = qz.rota(e_z);
   Matrix3d sk_zeta = skew(zeta);
@@ -90,20 +90,14 @@ void sample_pixels(Quat& qz, const Matrix2d& cov, std::vector<pixVector>& eta)
   Eigen::SelfAdjointEigenSolver<Matrix2d> eigensolver((eta_jac.transpose() * cov * eta_jac));
   Vector2d e = eigensolver.eigenvalues();
   Matrix2d v = eigensolver.eigenvectors();
-  Vector2d::Index max_id, dummy;
-  double max_e = e.maxCoeff(&max_id, &dummy);
-  double min_e = e(1 - max_id, 0);
   
-  if (max_id == 1)
-    v.transposeInPlace();
+  double a = 2.0*std::sqrt(std::abs(e(0,0)));
+  double b = 2.0*std::sqrt(std::abs(e(1,0)));
   
-  double a = 2.0*std::sqrt(std::abs(max_e));
-  double b = 2.0*std::sqrt(std::abs(min_e));
-  
-  for (float y = 0; y < std::round(b); y += PATCH_SIZE * 0.9)
+  for (float y = 0; y < std::round(b); y += PATCH_SIZE)
   {
     float xmax = (a/b) * std::sqrt(b*b - y*y);
-    for (float x = 0; x < xmax; x += PATCH_SIZE * 0.9)
+    for (float x = 0; x < xmax; x += PATCH_SIZE)
     {
       float t = std::atan2(y, x);
       float ct = std::cos(t);
@@ -172,17 +166,21 @@ void multiLvlPatchToCv(multiPatchVectorf& src, Mat& dst)
   eigen2cv(side_by_side, dst);
 }
 
-void transRect(Mat& img, const Rect& rect, const Scalar& col)
+void drawPatch(Mat& img, const Vector2d& pt, const Scalar& col)
 {
   double alpha = 0.3;
-  cv::Mat roi = img(rect);
-  cv::Mat color(roi.size(), CV_8UC3, col); 
-  cv::addWeighted(color, alpha, roi, 1.0 - alpha , 0.0, roi); 
+  if (pt(0,0) > PATCH_SIZE && pt(0,0) + PATCH_SIZE < img.cols && pt(1,0) > PATCH_SIZE && pt(1,0) + PATCH_SIZE < img.rows)
+  {
+    cv::Mat roi = img(Rect(Point(pt(0,0), pt(1,0)), Size(PATCH_SIZE, PATCH_SIZE)));
+    cv::Mat color(roi.size(), CV_8UC3, col); 
+    cv::addWeighted(color, alpha, roi, 1.0 - alpha , 0.0, roi); 
+    imwrite("/home/superjax/test/sampled.png", img);
+  }
 }
 
 int main()
 {  
-  
+  srand((unsigned int) time(0));
   Mat rgb = cv::imread("/home/superjax/.ros/cache/RGB00558.bmp");
   Mat grey;
   cvtColor(rgb, grey, COLOR_RGB2GRAY);
@@ -219,6 +217,10 @@ int main()
   cam_center_ << 320.0, 240.0;
   cam_F_ << 250.0, 0.0, 0.0,   0.0, 250.0, 0.0;
   
+  // Plot samples
+  Mat sampled;
+  cvtColor(grey, sampled, COLOR_GRAY2BGR);
+  
   // TEST patch_error jacobian calculation by performing Gauss-Newton Optimization on
   // a sample problem
   multiPatchJacMatrix J;
@@ -230,30 +232,46 @@ int main()
   Quat qz = Quat::Identity();
   Matrix2d cov;
   Vector2d dq;
+  Matrix2d dummy;
   dq << 0.1, -0.45;
   qz = q_feat_boxplus(qz, dq);
   proj(qz, eta, cov);
   multiLvlPatch(eta, patch);
+  drawPatch(sampled, eta, Scalar(0, 255, 0));
   
+  // Covariance of measurement
+  cov << 0.002, 0.001, 0.001, 0.004;
+  Eigen::SelfAdjointEigenSolver<Matrix2d> eigensolver(cov);
+  Vector2d l = eigensolver.eigenvalues();
+  Matrix2d v = eigensolver.eigenvectors();
   
-  // Estimated pixel location
-  dq << 0.01, 0.02;
-  Quat qzhat = q_feat_boxplus(qz, dq);
-  proj(qzhat, etahat, cov);
-  cov << 0.02, 0.01, 0.01, 0.04;
+  // Sample from the cov
+  std::default_random_engine generator;
+  std::normal_distribution<double> distribution(0, 1.0);
+  Vector2d sample;
+  sample << std::sqrt(l(0,0)) * distribution(generator),
+            std::sqrt(l(1,0)) * distribution(generator);
+  Quat qzhat = q_feat_boxplus(qz, v * sample);  
+  proj(qzhat, etahat, dummy);
+  drawPatch(sampled, etahat, Scalar(0, 0, 255));
   
+  // To compare, also plot the 2 stdev patches from the qz covariance
+  for (int i =0; i < 2; i++)
+  {
+    Vector2d p1, p2;
+    proj(q_feat_boxplus(qzhat, 2.0*std::sqrt(l(i,0)) * v.col(i)), p1, dummy);
+    proj(q_feat_boxplus(qzhat, -2.0*std::sqrt(l(i,0)) * v.col(i)), p2, dummy);
+    drawPatch(sampled, p1, Scalar(255, 0, 0));
+    drawPatch(sampled, p2, Scalar(255, 0, 0));
+  }
+  
+  auto start = std::chrono::high_resolution_clock::now();
   // Sample some pixels
   std::vector<pixVector> pix;
   sample_pixels(qzhat, cov, pix);
-  
-  // Plot samples
-  Mat sampled;
-  cvtColor(grey, sampled, COLOR_GRAY2BGR);
-  transRect(sampled, Rect(Point(eta(0,0), eta(1,0)), Size(PATCH_SIZE, PATCH_SIZE)), Scalar(0, 255, 255));
-      
   for (int i = 0; i < pix.size(); i++)
   {
-    transRect(sampled, Rect(Point(pix[i](0,0), pix[i](1,0)), Size(PATCH_SIZE, PATCH_SIZE)), Scalar(255, 0, 255));
+    drawPatch(sampled, pix[i], Scalar(255, 0, 255));
   }
   
   double min_error = INFINITY;
@@ -264,9 +282,9 @@ int main()
     int iter = 0;
     double prev_err = INFINITY;
     double current_err = e.norm();
-    while (current_err > 1e-3 && iter < 7)
+    while (current_err > 1e-3 && iter < 100 && std::abs(1.0 - current_err/prev_err) > 0.01)
     {
-      cout << "iter: " << iter << " e = " << current_err << " etahat = " << pix[i].transpose() << std::endl;
+      cout << "iter: " << iter << " e = " << current_err << " etahat = [" << pix[i].transpose() << "] ratio = " << std::abs(1.0 - current_err / prev_err) << std::endl;
       pix[i] = pix[i] - (J.transpose() * J).inverse() * J.transpose() * e;
       patch_error(pix[i], patch, e, J);
       iter++;
@@ -279,19 +297,15 @@ int main()
         min_patch_idx = i;
       }
     }    
-    std::cout << "iter: " << iter << " e = " << current_err << " etahat = " << etahat.transpose() << std::endl;
+    std::cout << "iter: " << iter << " e = " << current_err << " etahat = " << pix[i].transpose() << std::endl;
     std::cout << "optimization finished\n";
   }
-  transRect(sampled, Rect(Point(pix[min_patch_idx](0,0), pix[min_patch_idx](1,0)), Size(PATCH_SIZE, PATCH_SIZE)), Scalar(255, 255,0));
+  drawPatch(sampled, pix[min_patch_idx], Scalar(255, 255,0));
   
-  std::cout << " Optimum patch = id " << min_patch_idx; 
+  std::cout << " Optimum patch = id " << min_patch_idx << " est = [" << pix[min_patch_idx].transpose() << "] actual = [" << eta.transpose() << "]" << std::endl;
+  auto end = std::chrono::high_resolution_clock::now();
   
-  
-  imwrite("/home/superjax/test/sampled.png", sampled);
-  
-  
-  
-  
+  std::cout << "took " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "us" << std::endl;
   
   
   waitKey(0);  
