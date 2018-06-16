@@ -23,17 +23,17 @@ using namespace cv;
 using namespace quat;
 
 #define PATCH_SIZE 25
-#define PYRAMID_LEVELS 1
+#define PYRAMID_LEVELS 3
 
 typedef Matrix<double, 6, 1> uVector;
 typedef Matrix<double, 7, 1> eVector;
 typedef Matrix<double, 4, 1> zVector;
-typedef Matrix<float, 2, 1> pixVector;
+typedef Matrix<double, 2, 1> pixVector;
 typedef Matrix<uint8_t, PATCH_SIZE,PATCH_SIZE> patchMat;
 typedef Matrix<uint8_t, PATCH_SIZE*PATCH_SIZE*PYRAMID_LEVELS, 1> multiPatchVectorI;
-typedef Matrix<float, PATCH_SIZE, PATCH_SIZE*PYRAMID_LEVELS> multiPatchMatrixf;
-typedef Matrix<float, PATCH_SIZE*PATCH_SIZE*PYRAMID_LEVELS, 1> multiPatchVectorf;
-typedef Matrix<float, PATCH_SIZE*PATCH_SIZE*PYRAMID_LEVELS, 2> multiPatchJacMatrix;
+typedef Matrix<double, PATCH_SIZE, PATCH_SIZE*PYRAMID_LEVELS> multiPatchMatrixf;
+typedef Matrix<double, PATCH_SIZE*PATCH_SIZE*PYRAMID_LEVELS, 1> multiPatchVectorf;
+typedef Matrix<double, PATCH_SIZE*PATCH_SIZE*PYRAMID_LEVELS, 2> multiPatchJacMatrix;
 
 Mat img_[PYRAMID_LEVELS];
 
@@ -60,18 +60,18 @@ void multiLvlPatch(const pixVector &eta, multiPatchVectorf& dst)
   for (int i = 0; i < PYRAMID_LEVELS; i++)
   {
     Mat ROI;
-  getRectSubPix(img_[i], sz, Point2f(x,y), ROI, CV_32FC1);
-  x /= 2.0;
+    getRectSubPix(img_[i], sz, Point2f(x,y), ROI, CV_32FC1);
+    x /= 2.0;
     y /= 2.0;
     
     // Convert to Eigen, but just the part that we want to update
-    const Mat _dst(PATCH_SIZE, PATCH_SIZE, CV_32FC1, dst.data() + i * PATCH_SIZE*PATCH_SIZE, PATCH_SIZE * sizeof(float));
+    const Mat _dst(PATCH_SIZE, PATCH_SIZE, CV_64FC1, dst.data() + i * PATCH_SIZE*PATCH_SIZE, PATCH_SIZE * sizeof(double));
     if( ROI.type() == _dst.type() )
-        transpose(ROI, _dst);
+      transpose(ROI, _dst);
     else
     {
-        ROI.convertTo(_dst, _dst.type());
-        transpose(_dst, _dst);
+      ROI.convertTo(_dst, _dst.type());
+      transpose(_dst, _dst);
     }
   }
 }
@@ -112,26 +112,26 @@ void sample_pixels(Quat& qz, const Matrix2d& cov, std::vector<pixVector>& eta)
       {
         Vector2d p;
         p << x, y;
-        Vector2f pt = (v * p + eta0).cast<float>();
+        Vector2d pt = (v * p + eta0);
         if (pt(0,0) > PATCH_SIZE && pt(0,0) + PATCH_SIZE < img_[0].cols && pt(1,0) > PATCH_SIZE && pt(1,0) + PATCH_SIZE < img_[0].rows)
           eta.push_back(pt);
         if (x != 0)
         {
           p(0, 0) *= -1;
-          pt = (v * p + eta0).cast<float>();
+          pt = (v * p + eta0);
           if (pt(0,0) > PATCH_SIZE && pt(0,0) + PATCH_SIZE < img_[0].cols && pt(1,0) > PATCH_SIZE && pt(1,0) + PATCH_SIZE < img_[0].rows)
             eta.push_back(pt);
         }
         if (y != 0)
         {
           p(1, 0) *= -1;
-          pt = (v * p + eta0).cast<float>();
+          pt = (v * p + eta0);
           if (pt(0,0) > PATCH_SIZE && pt(0,0) + PATCH_SIZE < img_[0].cols && pt(1,0) > PATCH_SIZE && pt(1,0) + PATCH_SIZE < img_[0].rows)
             eta.push_back(pt);
           if (x != 0)
           {
             p(0, 0) *= -1;
-            pt = (v * p + eta0).cast<float>();
+            pt = (v * p + eta0);
             if (pt(0,0) > PATCH_SIZE && pt(0,0) + PATCH_SIZE < img_[0].cols && pt(1,0) > PATCH_SIZE && pt(1,0) + PATCH_SIZE < img_[0].rows)
               eta.push_back(pt);
           }
@@ -149,7 +149,7 @@ void patch_error(const pixVector &etahat, const multiPatchVectorf &I0, multiPatc
   multiLvlPatch(etahat, Ip);
   
   e = Ip - I0;
-  Matrix2f eye2 = Matrix2f::Identity();
+  Matrix2d eye2 = Matrix2d::Identity();
   
   // Perform central differencing
   for (int i = 0; i < 2; i++)
@@ -172,6 +172,14 @@ void multiLvlPatchToCv(multiPatchVectorf& src, Mat& dst)
   eigen2cv(side_by_side, dst);
 }
 
+void transRect(Mat& img, const Rect& rect, const Scalar& col)
+{
+  double alpha = 0.3;
+  cv::Mat roi = img(rect);
+  cv::Mat color(roi.size(), CV_8UC3, col); 
+  cv::addWeighted(color, alpha, roi, 1.0 - alpha , 0.0, roi); 
+}
+
 int main()
 {  
   
@@ -191,7 +199,7 @@ int main()
     img_[i].convertTo(img_[i], CV_32FC1);
   }
   
-  pixVector eta;
+  Vector2d eta;
   eta << 253.3, 420.63827;
  
   multiPatchVectorf patch;
@@ -215,46 +223,73 @@ int main()
   // a sample problem
   multiPatchJacMatrix J;
   multiPatchVectorf e;
-  pixVector etahat;
+  Vector2d etahat;
   etahat << 247.0, 412.0;
   patch_error(etahat, patch, e, J);
   
   Quat qz = Quat::Identity();
   Matrix2d cov;
   Vector2d dq;
-  dq << -0.1, 0.45;
-  cov << 0.02, 0.03, 0.03, 0.01;
+  dq << 0.1, -0.45;
   qz = q_feat_boxplus(qz, dq);
+  proj(qz, eta, cov);
+  multiLvlPatch(eta, patch);
   
+  
+  // Estimated pixel location
+  dq << 0.01, 0.02;
+  Quat qzhat = q_feat_boxplus(qz, dq);
+  proj(qzhat, etahat, cov);
+  cov << 0.02, 0.01, 0.01, 0.04;
+  
+  // Sample some pixels
   std::vector<pixVector> pix;
-  sample_pixels(qz, cov, pix);
+  sample_pixels(qzhat, cov, pix);
   
+  // Plot samples
   Mat sampled;
   cvtColor(grey, sampled, COLOR_GRAY2BGR);
-  double alpha = 0.3;
+  transRect(sampled, Rect(Point(eta(0,0), eta(1,0)), Size(PATCH_SIZE, PATCH_SIZE)), Scalar(0, 255, 255));
+      
   for (int i = 0; i < pix.size(); i++)
   {
-    cv::Mat roi = sampled(Rect(Point(pix[i](0,0), pix[i](1,0)), Size(PATCH_SIZE, PATCH_SIZE)));
-    cv::Mat color(roi.size(), CV_8UC3, cv::Scalar(255, 0, 255)); 
-    cv::addWeighted(color, alpha, roi, 1.0 - alpha , 0.0, roi); 
-  }
-  imwrite("/home/superjax/test/sampled.png", sampled);
- 
-  int iter = 0;
-  double prev_err = INFINITY;
-  double current_err = e.norm();
-  while (current_err > 1e-3 && iter < 100)
-  {
-    cout << "iter: " << iter << " e = " << current_err << " etahat = " << etahat.transpose() << std::endl;
-    etahat = etahat - (J.transpose() * J).inverse() * J.transpose() * e;
-    patch_error(etahat, patch, e, J);
-    iter++;
-    prev_err = current_err;
-    current_err = e.norm();
+    transRect(sampled, Rect(Point(pix[i](0,0), pix[i](1,0)), Size(PATCH_SIZE, PATCH_SIZE)), Scalar(255, 0, 255));
   }
   
-  std::cout << "optimization finished\n";
-  std::cout << "iter: " << iter << " e = " << current_err << " etahat = " << etahat.transpose() << std::endl;
+  double min_error = INFINITY;
+  int min_patch_idx = 0;
+  for (int i = 0; i < pix.size(); i++)
+  {
+    std::cout << " Patch " << i << "  ====================================" << std::endl;
+    int iter = 0;
+    double prev_err = INFINITY;
+    double current_err = e.norm();
+    while (current_err > 1e-3 && iter < 7)
+    {
+      cout << "iter: " << iter << " e = " << current_err << " etahat = " << pix[i].transpose() << std::endl;
+      pix[i] = pix[i] - (J.transpose() * J).inverse() * J.transpose() * e;
+      patch_error(pix[i], patch, e, J);
+      iter++;
+      prev_err = current_err;
+      current_err = e.norm();
+      
+      if (current_err < min_error)
+      {
+        min_error = current_err;
+        min_patch_idx = i;
+      }
+    }    
+    std::cout << "iter: " << iter << " e = " << current_err << " etahat = " << etahat.transpose() << std::endl;
+    std::cout << "optimization finished\n";
+  }
+  transRect(sampled, Rect(Point(pix[min_patch_idx](0,0), pix[min_patch_idx](1,0)), Size(PATCH_SIZE, PATCH_SIZE)), Scalar(255, 255,0));
+  
+  std::cout << " Optimum patch = id " << min_patch_idx; 
+  
+  
+  imwrite("/home/superjax/test/sampled.png", sampled);
+  
+  
   
   
   
