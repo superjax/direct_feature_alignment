@@ -171,7 +171,7 @@ void multiLvlPatchToCv(multiPatchVectorf& src, Mat& dst)
 
 void drawPatch(int i, Mat& img, const Vector2f& pt, const Scalar& col, double alpha=0.3)
 {
-//#if 0
+#if 0
   if (pt(0,0) > PATCH_SIZE && pt(0,0) + PATCH_SIZE < img.cols && pt(1,0) > PATCH_SIZE && pt(1,0) + PATCH_SIZE < img.rows)
   {
     cv::Mat roi = img(Rect(Point(pt(0,0), pt(1,0)), Size(PATCH_SIZE, PATCH_SIZE)));
@@ -179,7 +179,7 @@ void drawPatch(int i, Mat& img, const Vector2f& pt, const Scalar& col, double al
     cv::addWeighted(color, alpha, roi, 1.0 - alpha , 0.0, roi); 
     imwrite("/home/superjax/test/sampled" + std::to_string(i) + ".png", img);
   }
-//#endif
+#endif
 }
 
 int main()
@@ -246,7 +246,7 @@ int main()
     //    imwrite("side-by-side.png", side_by_side);
     
     // Covariance of measurement
-    cov << 0.001, 0.0001, 0.0001, 0.001;
+    cov << 0.0005, 0.0001, 0.0001, 0.0005;
     eigensolver.computeDirect(cov);
     Vector2f l = eigensolver.eigenvalues();
     Matrix2f v = eigensolver.eigenvectors();
@@ -285,7 +285,7 @@ int main()
     
     double min_error = INFINITY;
     int min_patch_idx = 0;
-    double tol = 1e-2;
+    double tol = 1;
     for (int i = 0; i < pix.size(); i++)
     {
       pix_copy.push_back(pix[i]);
@@ -314,7 +314,7 @@ int main()
           done = true;
           min_patch_idx = i;
         }
-      } while (!done && iter < 25 && std::abs(1.0 - current_err/prev_err) > 0.005);
+      } while (!done && iter < 25 && std::abs(1.0 - current_err/prev_err) > 0.05);
       if (done)
         break;
     }
